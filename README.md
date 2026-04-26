@@ -1,18 +1,18 @@
 # PHP WebShell Client
 
 A lightweight Python CLI to interact with minimal PHP `?cmd=` webshells.  
-Designed to keep the server-side payload extremely small while providing a comfortable client-side interface.
+Designed to keep the server-side payload extremely small while providing a comfortable, robust client-side interface.
 
 ## ✨ Features
-- Kali-style interactive prompt (user-only label, `#` when `uid=0`).
-- Tab completion with remote directory caching.
-- Command history navigation (↑ / ↓) via `readline`.
+- **Kali-style interactive prompt** (user-only label, `#` when `uid=0`).
+- **Tab completion** with remote directory caching and smart invalidation.
+- **Command history navigation** (↑ / ↓) via native `readline` (without duplicates).
+- **TTY Protection:** Automatically intercepts interactive commands (`su`, `ssh`, `nano`, `top`, etc.) client-side to prevent hanging the webshell.
 - **Compatible with *both* minimal PHP shells** (see below).
-- Robust parsing with output markers (independent of any HTML the server may add).
-- Auto-detects current user (`whoami`) for prompt display.
-- Refreshes identity only when a command suggests a user change (e.g. `sudo`, `su`, `newgrp`, `docker`, …).
+- **Robust output parsing** with markers (independent of any HTML the server may add).
+- **Reliable Identity Detection:** Accurately detects current user (`id` / `whoami` / `$USER`) for prompt display without relying on complex bash variables.
 - Uses `requests.Session()` with retries and timeouts.
-- **AUTO transport**: tries POST first and falls back to GET if needed (you can force one).
+- **AUTO transport:** tries POST first and falls back to GET if needed (you can force one).
 
 ## ✅ Minimal server-side shells (compatible)
 
@@ -69,10 +69,10 @@ www-data
 ```
 
 ## ⚙️ How it works (high level)
-- The client wraps your command with **markers** (`__WBSTART__`, `__WBEND__`, `__WBRC__`) and a safe `cd` to the current working directory.  
-- Output is parsed at **byte** level to avoid HTML interference.  
-- Directory listings for tab-completion are cached for a few seconds and invalidated after FS-changing commands.  
-- Identity (user) is detected via `whoami` / `id -un` and **only** refreshed if you run commands that look like user changes (e.g., `sudo`, `su`, …).
+- **Stateless Emulation:** HTTP is inherently stateless. The client emulates a stateful shell by tracking your current working directory (`cwd`) client-side and wrapping your commands with a safe `cd` before execution.
+- **Marker Parsing:** Output is parsed at **byte** level using wrappers (`__WBSTART__`, `__WBEND__`, `__WBRC__`) to avoid HTML interference and capture exact exit codes.
+- **Directory Caching:** Directory listings for tab-completion are cached for a few seconds and automatically invalidated after FS-mutating commands (`rm`, `mkdir`, `mv`, etc.).
+- **TTY Constraints:** Commands that require a real interactive TTY (like `su` or `vim`) will normally hang a webshell. The script detects these and blocks them client-side, showing a warning instead.
 
 ## 🧩 Options (excerpt)
 - `TRANSPORT = "auto" | "post" | "get"` — transport selection.
